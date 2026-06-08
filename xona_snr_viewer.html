@@ -1,0 +1,1055 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Xona X18 SNR Decoder & Viewer</title>
+    <!-- Premium Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        :root {
+            --bg-color: #080b11;
+            --card-bg: rgba(17, 24, 39, 0.7);
+            --card-border: rgba(255, 255, 255, 0.08);
+            --text-color: #f3f4f6;
+            --text-muted: #9ca3af;
+            --primary: #3b82f6;
+            --accent-x1: #3b82f6;
+            --accent-x5: #10b981;
+            --accent2-x1: #f59e0b;
+            --accent2-x5: #ef4444;
+            --glow-color: rgba(59, 130, 246, 0.15);
+        }
+        body {
+            background-color: var(--bg-color);
+            background-image: 
+                radial-gradient(at 0% 0%, rgba(59, 130, 246, 0.12) 0px, transparent 50%),
+                radial-gradient(at 100% 100%, rgba(16, 185, 129, 0.08) 0px, transparent 50%);
+            background-attachment: fixed;
+            color: var(--text-color);
+            font-family: 'Inter', sans-serif;
+            margin: 0;
+            padding: 24px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-height: 100vh;
+            box-sizing: border-box;
+        }
+        .container {
+            max-width: 1200px;
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            gap: 24px;
+        }
+        header {
+            text-align: center;
+            margin-bottom: 8px;
+        }
+        h1 {
+            font-family: 'Outfit', sans-serif;
+            font-size: 2.8rem;
+            font-weight: 800;
+            margin: 0 0 8px 0;
+            background: linear-gradient(135deg, #60a5fa 0%, #3b82f6 50%, #10b981 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            letter-spacing: -0.02em;
+        }
+        p.subtitle {
+            color: var(--text-muted);
+            font-size: 1.1rem;
+            margin: 0;
+        }
+        /* Drag and Drop Zone */
+        .drop-zone {
+            background: var(--card-bg);
+            border: 2px dashed rgba(59, 130, 246, 0.3);
+            border-radius: 16px;
+            padding: 45px 24px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            backdrop-filter: blur(12px);
+            box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.2);
+        }
+        .drop-zone.hover {
+            border-color: var(--primary);
+            background: rgba(59, 130, 246, 0.05);
+            box-shadow: 0 0 25px var(--glow-color);
+            transform: scale(1.01);
+        }
+        .drop-zone-icon {
+            font-size: 3rem;
+            margin-bottom: 16px;
+            display: inline-block;
+            transition: transform 0.3s ease;
+        }
+        .drop-zone.hover .drop-zone-icon {
+            transform: translateY(-5px);
+        }
+        .drop-zone-text {
+            font-size: 1.2rem;
+            font-weight: 500;
+            margin-bottom: 8px;
+            color: #e5e7eb;
+        }
+        .drop-zone-subtext {
+            font-size: 0.9rem;
+            color: var(--text-muted);
+        }
+        /* Dashboard Layout */
+        .dashboard {
+            display: none;
+            flex-direction: column;
+            gap: 24px;
+        }
+        .meta-card {
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 16px;
+            padding: 20px;
+            backdrop-filter: blur(12px);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 16px;
+        }
+        .meta-info {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+            flex-grow: 1;
+        }
+        .meta-row {
+            display: flex;
+            gap: 24px;
+            flex-wrap: wrap;
+            padding-bottom: 8px;
+        }
+        .meta-row:not(:last-child) {
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+        .meta-item {
+            display: flex;
+            flex-direction: column;
+        }
+        .meta-label {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .meta-val {
+            font-size: 0.95rem;
+            font-weight: 600;
+        }
+        .btn {
+            background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-family: 'Inter', sans-serif;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            box-shadow: 0 4px 12px rgba(29, 78, 216, 0.3);
+            white-space: nowrap;
+        }
+        .btn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 6px 16px rgba(29, 78, 216, 0.4);
+        }
+        .btn:active {
+            transform: translateY(1px);
+        }
+        /* Stats Sections */
+        .stats-container {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+        .stats-section-title {
+            font-size: 0.95rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            border-bottom: 1px solid var(--card-border);
+            padding-bottom: 4px;
+            margin: 0;
+        }
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 16px;
+        }
+        .stat-card {
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 16px;
+            padding: 16px 20px;
+            text-align: center;
+            backdrop-filter: blur(12px);
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+        .stat-title {
+            color: var(--text-muted);
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 6px;
+        }
+        .stat-value {
+            font-size: 1.8rem;
+            font-weight: 700;
+            font-family: 'Outfit', sans-serif;
+        }
+        .stat-value.x1 { color: var(--accent-x1); }
+        .stat-value.x5 { color: var(--accent-x5); }
+        .stat-value.x1-2 { color: var(--accent2-x1); }
+        .stat-value.x5-2 { color: var(--accent2-x5); }
+        /* Chart Card */
+        .chart-card {
+            background: var(--card-bg);
+            border: 1px solid var(--card-border);
+            border-radius: 16px;
+            padding: 24px;
+            backdrop-filter: blur(12px);
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.3);
+        }
+        .chart-header {
+            display: flex;
+            justify-content: flex-end;
+            align-items: center;
+            margin-bottom: 12px;
+            gap: 8px;
+        }
+        .chart-header input {
+            width: 16px;
+            height: 16px;
+            cursor: pointer;
+        }
+        .chart-header label {
+            font-size: 0.9rem;
+            color: var(--text-muted);
+            cursor: pointer;
+            user-select: none;
+        }
+        .chart-container {
+            position: relative;
+            height: 520px;
+            width: 100%;
+        }
+        /* Footer */
+        footer {
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 0.85rem;
+            margin-top: 40px;
+            padding-bottom: 24px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Xona X18 SNR Analyzer</h1>
+            <p class="subtitle" id="main-subtitle">Drag & Drop up to 2 raw RTCM3 stream logs to extract and compare SNR values</p>
+        </header>
+
+        <!-- Drag & Drop Zone -->
+        <div id="drop-zone" class="drop-zone">
+            <div class="drop-zone-icon">🚀</div>
+            <div class="drop-zone-text">Drop RTCM3 log file(s) here</div>
+            <div class="drop-zone-subtext">Drop 1 or 2 files to visualize or compare receiver streams</div>
+        </div>
+
+        <!-- Dashboard -->
+        <div id="dashboard" class="dashboard">
+            <!-- File Meta -->
+            <div class="meta-card">
+                <div class="meta-info" id="meta-info-container">
+                    <!-- Dynamic meta data here -->
+                </div>
+                <button class="btn" id="btn-export">Export CSV</button>
+            </div>
+
+            <!-- Stats Grid -->
+            <div class="stats-container" id="stats-container">
+                <!-- Dynamic stats sheets here -->
+            </div>
+
+            <!-- Chart Card -->
+            <div class="chart-card">
+                <div class="chart-header" id="chart-controls" style="display: none;">
+                    <input type="checkbox" id="chk-gps" checked>
+                    <label for="chk-gps">Show GPS SNR Benchmark</label>
+                </div>
+                <div class="chart-container">
+                    <canvas id="snrChart"></canvas>
+                </div>
+            </div>
+        </div>
+
+        <footer>
+            Xona RTCM3 Decoder &bull; Powered by Antigravity
+        </footer>
+    </div>
+
+    <script>
+        const dropZone = document.getElementById('drop-zone');
+        const dashboard = document.getElementById('dashboard');
+        
+        // Setup Drag & Drop events
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.classList.add('hover');
+        });
+
+        dropZone.addEventListener('dragleave', () => {
+            dropZone.classList.remove('hover');
+        });
+
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('hover');
+            const files = Array.from(e.dataTransfer.files);
+            if (files.length > 0) {
+                processFiles(files);
+            }
+        });
+
+        dropZone.addEventListener('click', () => {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.multiple = true;
+            input.accept = '.log,.rtcm3,.bin';
+            input.onchange = (e) => {
+                const files = Array.from(e.target.files);
+                if (files.length > 0) {
+                    processFiles(files);
+                }
+            };
+            input.click();
+        });
+
+        // Bit extraction helpers
+        function getbitu(buff, pos, len) {
+            let bits = 0;
+            for (let i = pos; i < pos + len; i++) {
+                bits = (bits << 1) + ((buff[Math.floor(i / 8)] >> (7 - (i % 8))) & 1);
+            }
+            return bits;
+        }
+
+        // Table-less CRC-24Q calculation
+        function calculateCrc24q(buff, len) {
+            let crc = 0;
+            for (let i = 0; i < len; i++) {
+                crc ^= (buff[i] << 16);
+                for (let j = 0; j < 8; j++) {
+                    crc <<= 1;
+                    if (crc & 0x1000000) {
+                        crc ^= 0x1864CFB;
+                    }
+                }
+            }
+            return crc & 0xFFFFFF;
+        }
+
+        // Helper to parse filename date
+        function parseFilenameDate(filename) {
+            const match = filename.match(/(\d{4})-(\d{2})-(\d{2})/);
+            if (match) {
+                return new Date(Date.UTC(parseInt(match[1]), parseInt(match[2]) - 1, parseInt(match[3])));
+            }
+            return new Date();
+        }
+
+        function getGpsWeekStart(refDate) {
+            const day = refDate.getUTCDay();
+            const gpsWeekStart = new Date(refDate.getTime() - day * 24 * 60 * 60 * 1000);
+            gpsWeekStart.setUTCHours(0, 0, 0, 0);
+            return gpsWeekStart;
+        }
+
+        // Promise wrapper for reading file
+        function readFileAsArrayBuffer(file) {
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = (e) => resolve({
+                    name: file.name,
+                    size: file.size,
+                    buffer: new Uint8Array(e.target.result)
+                });
+                reader.onerror = (err) => reject(err);
+                reader.readAsArrayBuffer(file);
+            });
+        }
+
+        // Decode logic for single buffer (decodes XONA 4045 and GPS 1077)
+        function decodeRtcmBuffer(buffer, filename) {
+            const n = buffer.length;
+            let idx = 0;
+            let packetCount = 0;
+            let targetCount = 0;
+            let records = [];
+            let gpsBestSnr = new Map();
+
+            const refDate = parseFilenameDate(filename);
+            const gpsWeekStart = getGpsWeekStart(refDate);
+
+            while (idx < n - 5) {
+                if (buffer[idx] === 0xD3) {
+                    const length = ((buffer[idx+1] & 0x03) << 8) | buffer[idx+2];
+                    if (idx + 6 + length <= n) {
+                        const packet = buffer.subarray(idx, idx + 6 + length);
+                        
+                        const calcCrc = calculateCrc24q(packet.subarray(0, packet.length - 3), packet.length - 3);
+                        const expectedCrc = (packet[packet.length - 3] << 16) | (packet[packet.length - 2] << 8) | packet[packet.length - 1];
+                        
+                        if (calcCrc === expectedCrc) {
+                            packetCount++;
+                            const msgType = (packet[3] << 4) | (packet[4] >> 4);
+                            
+                            if (msgType === 4045) {
+                                const subtype = ((packet[4] & 0x01) << 8) | packet[5];
+                                if (subtype === 7) { // MSM7
+                                    let bitPos = 48;
+                                    const staid = getbitu(packet, bitPos, 12); bitPos += 12;
+                                    const tow = getbitu(packet, bitPos, 30) * 0.001; bitPos += 30;
+                                    const sync = getbitu(packet, bitPos, 1); bitPos += 1;
+                                    const iod = getbitu(packet, bitPos, 3); bitPos += 3;
+                                    const time_s = getbitu(packet, bitPos, 7); bitPos += 7;
+                                    const clk_str = getbitu(packet, bitPos, 2); bitPos += 2;
+                                    const clk_ext = getbitu(packet, bitPos, 2); bitPos += 2;
+                                    const smooth = getbitu(packet, bitPos, 1); bitPos += 1;
+                                    const tint_s = getbitu(packet, bitPos, 3); bitPos += 3;
+
+                                    const sats = [];
+                                    for (let j = 1; j <= 64; j++) {
+                                        const mask = getbitu(packet, bitPos, 1); bitPos += 1;
+                                        if (mask) sats.push(j);
+                                    }
+
+                                    const sigs = [];
+                                    for (let j = 1; j <= 4; j++) {
+                                        const mask = getbitu(packet, bitPos, 1); bitPos += 1;
+                                        if (mask) sigs.push(j);
+                                    }
+
+                                    const page = getbitu(packet, bitPos, 28); bitPos += 28;
+                                    
+                                    const nsat = sats.length;
+                                    const nsig = sigs.length;
+
+                                    const cellmask = [];
+                                    let ncell = 0;
+                                    for (let j = 0; j < nsat * nsig; j++) {
+                                        const mask = getbitu(packet, bitPos, 1); bitPos += 1;
+                                        cellmask.push(mask);
+                                        if (mask) ncell++;
+                                    }
+
+                                    bitPos += nsat * 36; // Skip satellite data block
+                                    const cnrStart = bitPos + ncell * 55;
+
+                                    let targetRIdx = -1;
+                                    for (let r = 0; r < nsat; r++) {
+                                        const svid = page * 64 + sats[r];
+                                        if (svid === 249) {
+                                            targetRIdx = r;
+                                            break;
+                                        }
+                                    }
+
+                                    if (targetRIdx !== -1) {
+                                        targetCount++;
+                                        let cellIdx = 0;
+                                        let snrX1 = null;
+                                        let snrX5 = null;
+
+                                        for (let r = 0; r < nsat; r++) {
+                                            for (let s = 0; s < nsig; s++) {
+                                                if (cellmask[r * nsig + s]) {
+                                                    if (r === targetRIdx) {
+                                                        const cnrVal = getbitu(packet, cnrStart + cellIdx * 10, 10) * 0.0625;
+                                                        if (sigs[s] === 1) {
+                                                            snrX1 = parseFloat(cnrVal.toFixed(4));
+                                                        } else if (sigs[s] === 2) {
+                                                            snrX5 = parseFloat(cnrVal.toFixed(4));
+                                                        }
+                                                    }
+                                                    cellIdx++;
+                                                }
+                                            }
+                                        }
+
+                                        const epochTime = new Date(gpsWeekStart.getTime() + tow * 1000);
+                                        const timeStr = epochTime.getUTCFullYear() + '-' +
+                                            String(epochTime.getUTCMonth() + 1).padStart(2, '0') + '-' +
+                                            String(epochTime.getUTCDate()).padStart(2, '0') + ' ' +
+                                            String(epochTime.getUTCHours()).padStart(2, '0') + ':' +
+                                            String(epochTime.getUTCMinutes()).padStart(2, '0') + ':' +
+                                            String(epochTime.getUTCSeconds()).padStart(2, '0');
+
+                                        records.push({
+                                            tow: tow,
+                                            time: timeStr,
+                                            x1: snrX1,
+                                            x5: snrX5
+                                        });
+                                    }
+                                }
+                            } else if (msgType === 1077) { // GPS MSM7
+                                let bitPos = 36;
+                                const staid = getbitu(packet, bitPos, 12); bitPos += 12;
+                                const tow = getbitu(packet, bitPos, 30) * 0.001; bitPos += 30;
+                                const sync = getbitu(packet, bitPos, 1); bitPos += 1;
+                                const iod = getbitu(packet, bitPos, 3); bitPos += 3;
+                                const time_s = getbitu(packet, bitPos, 7); bitPos += 7;
+                                const clk_str = getbitu(packet, bitPos, 2); bitPos += 2;
+                                const clk_ext = getbitu(packet, bitPos, 2); bitPos += 2;
+                                const smooth = getbitu(packet, bitPos, 1); bitPos += 1;
+                                const tint_s = getbitu(packet, bitPos, 3); bitPos += 3;
+
+                                const sats = [];
+                                for (let j = 1; j <= 64; j++) {
+                                    const mask = getbitu(packet, bitPos, 1); bitPos += 1;
+                                    if (mask) sats.push(j);
+                                }
+
+                                const sigs = [];
+                                for (let j = 1; j <= 32; j++) {
+                                    const mask = getbitu(packet, bitPos, 1); bitPos += 1;
+                                    if (mask) sigs.push(j);
+                                }
+                                
+                                const nsat = sats.length;
+                                const nsig = sigs.length;
+
+                                const cellmask = [];
+                                let ncell = 0;
+                                for (let j = 0; j < nsat * nsig; j++) {
+                                    const mask = getbitu(packet, bitPos, 1); bitPos += 1;
+                                    cellmask.push(mask);
+                                    if (mask) ncell++;
+                                }
+
+                                bitPos += nsat * 36; // Skip satellite data block
+                                const cnrStart = bitPos + ncell * 55;
+
+                                const snrs = [];
+                                for (let c = 0; c < ncell; c++) {
+                                    const cnrVal = getbitu(packet, cnrStart + c * 10, 10) * 0.0625;
+                                    snrs.push(cnrVal);
+                                }
+
+                                if (snrs.length > 0) {
+                                    const maxVal = Math.max(...snrs);
+                                    gpsBestSnr.set(tow, maxVal);
+                                }
+                            }
+                        }
+                        idx += 6 + length;
+                        continue;
+                    }
+                }
+                idx++;
+            }
+            return { records, gpsBestSnr, packetCount };
+        }
+
+        let file1Data = null;
+        let file2Data = null;
+        let gpsBestSnrAligned = new Map();
+        let activeChart = null;
+
+        function processFiles(files) {
+            const loadPromises = files.slice(0, 2).map(readFileAsArrayBuffer);
+            
+            Promise.all(loadPromises).then(results => {
+                const t0 = performance.now();
+                
+                // Decode file 1
+                const f1 = results[0];
+                const dec1 = decodeRtcmBuffer(f1.buffer, f1.name);
+                file1Data = {
+                    name: f1.name,
+                    size: f1.size,
+                    records: dec1.records,
+                    gpsBestSnr: dec1.gpsBestSnr,
+                    packets: dec1.packetCount
+                };
+
+                // Decode file 2 (if present)
+                if (results.length > 1) {
+                    const f2 = results[1];
+                    const dec2 = decodeRtcmBuffer(f2.buffer, f2.name);
+                    file2Data = {
+                        name: f2.name,
+                        size: f2.size,
+                        records: dec2.records,
+                        gpsBestSnr: dec2.gpsBestSnr,
+                        packets: dec2.packetCount
+                    };
+                } else {
+                    file2Data = null;
+                }
+
+                // Merge GPS best SNR from both files (if available)
+                gpsBestSnrAligned = new Map(file1Data.gpsBestSnr);
+                if (file2Data) {
+                    for (const [tow, val] of file2Data.gpsBestSnr) {
+                        if (!gpsBestSnrAligned.has(tow) || val > gpsBestSnrAligned.get(tow)) {
+                            gpsBestSnrAligned.set(tow, val);
+                        }
+                    }
+                }
+
+                const t1 = performance.now();
+                const decodeTime = (t1 - t0).toFixed(1) + ' ms';
+                
+                renderDashboard(decodeTime);
+            }).catch(err => {
+                alert("Error processing files: " + err);
+                console.error(err);
+            });
+        }
+
+        function renderDashboard(decodeTime) {
+            dashboard.style.display = 'flex';
+            dropZone.style.display = 'none';
+
+            const metaContainer = document.getElementById('meta-info-container');
+            const statsContainer = document.getElementById('stats-container');
+            const subtitle = document.getElementById('main-subtitle');
+            const chkContainer = document.getElementById('chart-controls');
+
+            // Render GPS control checkbox visibility
+            if (gpsBestSnrAligned.size > 0) {
+                chkContainer.style.display = 'flex';
+                document.getElementById('chk-gps').checked = true;
+            } else {
+                chkContainer.style.display = 'none';
+            }
+
+            // Render file meta card
+            let metaHtml = `
+                <div class="meta-row">
+                    <div class="meta-item">
+                        <span class="meta-label">File 1 Name</span>
+                        <span class="meta-val">${file1Data.name}</span>
+                    </div>
+                    <div class="meta-item">
+                        <span class="meta-label">File 1 Size</span>
+                        <span class="meta-val">${(file1Data.size / (1024 * 1024)).toFixed(2)} MB</span>
+                    </div>
+                    <div class="meta-item">
+                        <span class="meta-label">File 1 Packets</span>
+                        <span class="meta-val">${file1Data.packets}</span>
+                    </div>
+                    <div class="meta-item">
+                        <span class="meta-label">Decoding Time</span>
+                        <span class="meta-val">${decodeTime}</span>
+                    </div>
+                </div>
+            `;
+
+            if (file2Data) {
+                metaHtml += `
+                    <div class="meta-row" style="margin-top: 8px; padding-top: 8px;">
+                        <div class="meta-item">
+                            <span class="meta-label">File 2 Name</span>
+                            <span class="meta-val">${file2Data.name}</span>
+                        </div>
+                        <div class="meta-item">
+                            <span class="meta-label">File 2 Size</span>
+                            <span class="meta-val">${(file2Data.size / (1024 * 1024)).toFixed(2)} MB</span>
+                        </div>
+                        <div class="meta-item">
+                            <span class="meta-label">File 2 Packets</span>
+                            <span class="meta-val">${file2Data.packets}</span>
+                        </div>
+                    </div>
+                `;
+                subtitle.innerHTML = `Comparing: <strong>${file1Data.name}</strong> vs <strong>${file2Data.name}</strong>`;
+            } else {
+                subtitle.innerHTML = `Decoded from RTCM3 raw stream: <strong>${file1Data.name}</strong>`;
+            }
+            metaContainer.innerHTML = metaHtml;
+
+            // Render stats grid
+            let statsHtml = `
+                <h3 class="stats-section-title">File 1 Stats: ${file1Data.name}</h3>
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-title">Epochs</div>
+                        <div class="stat-value">${file1Data.records.length}</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-title">X1 Max SNR</div>
+                        <div class="stat-value x1" id="x1-max">-</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-title">X1 Average SNR</div>
+                        <div class="stat-value x1" id="x1-mean">-</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-title">X5 Max SNR</div>
+                        <div class="stat-value x5" id="x5-max">-</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-title">X5 Average SNR</div>
+                        <div class="stat-value x5" id="x5-mean">-</div>
+                    </div>
+                </div>
+            `;
+
+            if (file2Data) {
+                statsHtml += `
+                    <h3 class="stats-section-title" style="margin-top: 16px;">File 2 Stats: ${file2Data.name}</h3>
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <div class="stat-title">Epochs</div>
+                            <div class="stat-value">${file2Data.records.length}</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-title">X1 Max SNR</div>
+                            <div class="stat-value x1-2" id="x1-max-2">-</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-title">X1 Average SNR</div>
+                            <div class="stat-value x1-2" id="x1-mean-2">-</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-title">X5 Max SNR</div>
+                            <div class="stat-value x5-2" id="x5-max-2">-</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-title">X5 Average SNR</div>
+                            <div class="stat-value x5-2" id="x5-mean-2">-</div>
+                        </div>
+                    </div>
+                `;
+            }
+            statsContainer.innerHTML = statsHtml;
+
+            // Calculate and display statistics
+            const f1_x1 = file1Data.records.map(r => r.x1).filter(v => v !== null && v !== undefined);
+            const f1_x5 = file1Data.records.map(r => r.x5).filter(v => v !== null && v !== undefined);
+
+            if (f1_x1.length > 0) {
+                document.getElementById('x1-max').innerText = Math.max(...f1_x1).toFixed(2) + ' dB-Hz';
+                document.getElementById('x1-mean').innerText = (f1_x1.reduce((a, b) => a + b, 0) / f1_x1.length).toFixed(2) + ' dB-Hz';
+            }
+            if (f1_x5.length > 0) {
+                document.getElementById('x5-max').innerText = Math.max(...f1_x5).toFixed(2) + ' dB-Hz';
+                document.getElementById('x5-mean').innerText = (f1_x5.reduce((a, b) => a + b, 0) / f1_x5.length).toFixed(2) + ' dB-Hz';
+            }
+
+            if (file2Data) {
+                const f2_x1 = file2Data.records.map(r => r.x1).filter(v => v !== null && v !== undefined);
+                const f2_x5 = file2Data.records.map(r => r.x5).filter(v => v !== null && v !== undefined);
+
+                if (f2_x1.length > 0) {
+                    document.getElementById('x1-max-2').innerText = Math.max(...f2_x1).toFixed(2) + ' dB-Hz';
+                    document.getElementById('x1-mean-2').innerText = (f2_x1.reduce((a, b) => a + b, 0) / f2_x1.length).toFixed(2) + ' dB-Hz';
+                }
+                if (f2_x5.length > 0) {
+                    document.getElementById('x5-max-2').innerText = Math.max(...f2_x5).toFixed(2) + ' dB-Hz';
+                    document.getElementById('x5-mean-2').innerText = (f2_x5.reduce((a, b) => a + b, 0) / f2_x5.length).toFixed(2) + ' dB-Hz';
+                }
+            }
+
+            // Setup chart datasets and labels
+            let times = [];
+            let datasets = [];
+
+            if (file2Data) {
+                // Merge timelines
+                const allTimesSet = new Set();
+                file1Data.records.forEach(r => allTimesSet.add(r.time));
+                file2Data.records.forEach(r => allTimesSet.add(r.time));
+                times = Array.from(allTimesSet).sort();
+
+                const dict1 = new Map(file1Data.records.map(r => [r.time, r]));
+                const dict2 = new Map(file2Data.records.map(r => [r.time, r]));
+
+                const x1_1 = [];
+                const x5_1 = [];
+                const x1_2 = [];
+                const x5_2 = [];
+                const gpsVals = [];
+
+                times.forEach(t => {
+                    const r1 = dict1.get(t);
+                    x1_1.push(r1 ? r1.x1 : null);
+                    x5_1.push(r1 ? r1.x5 : null);
+                    
+                    const r2 = dict2.get(t);
+                    x1_2.push(r2 ? r2.x1 : null);
+                    x5_2.push(r2 ? r2.x5 : null);
+                    
+                    const tow = r1 ? r1.tow : (r2 ? r2.tow : null);
+                    gpsVals.push(tow !== null ? gpsBestSnrAligned.get(tow) || null : null);
+                });
+
+                datasets = [
+                    {
+                        label: 'File 1 X1 SNR (1X)',
+                        data: x1_1,
+                        borderColor: '#3b82f6',
+                        backgroundColor: 'rgba(59, 130, 246, 0.05)',
+                        borderWidth: 2,
+                        pointRadius: 1,
+                        pointHoverRadius: 4,
+                        spanGaps: true,
+                        tension: 0.1
+                    },
+                    {
+                        label: 'File 1 X5 SNR (5X)',
+                        data: x5_1,
+                        borderColor: '#10b981',
+                        backgroundColor: 'rgba(16, 185, 129, 0.05)',
+                        borderWidth: 2,
+                        pointRadius: 1,
+                        pointHoverRadius: 4,
+                        spanGaps: true,
+                        tension: 0.1
+                    },
+                    {
+                        label: 'File 2 X1 SNR (1X)',
+                        data: x1_2,
+                        borderColor: '#f59e0b',
+                        backgroundColor: 'rgba(245, 158, 11, 0.05)',
+                        borderWidth: 2,
+                        borderDash: [5, 5],
+                        pointRadius: 1,
+                        pointHoverRadius: 4,
+                        spanGaps: true,
+                        tension: 0.1
+                    },
+                    {
+                        label: 'File 2 X5 SNR (5X)',
+                        data: x5_2,
+                        borderColor: '#ef4444',
+                        backgroundColor: 'rgba(239, 68, 68, 0.05)',
+                        borderWidth: 2,
+                        borderDash: [5, 5],
+                        pointRadius: 1,
+                        pointHoverRadius: 4,
+                        spanGaps: true,
+                        tension: 0.1
+                    }
+                ];
+
+                if (gpsBestSnrAligned.size > 0) {
+                    datasets.push({
+                        label: 'Best GPS SNR (Benchmark)',
+                        data: gpsVals,
+                        borderColor: '#9ca3af',
+                        backgroundColor: 'transparent',
+                        borderWidth: 1.5,
+                        borderDash: [3, 3],
+                        pointRadius: 0,
+                        pointHoverRadius: 3,
+                        spanGaps: true,
+                        tension: 0.1
+                    });
+                }
+            } else {
+                times = file1Data.records.map(r => r.time);
+                const x1 = file1Data.records.map(r => r.x1);
+                const x5 = file1Data.records.map(r => r.x5);
+                const gpsVals = file1Data.records.map(r => gpsBestSnrAligned.get(r.tow) || null);
+
+                datasets = [
+                    {
+                        label: 'Xona X18 X1 SNR (1X)',
+                        data: x1,
+                        borderColor: '#3b82f6',
+                        backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                        borderWidth: 2,
+                        pointRadius: 1,
+                        pointHoverRadius: 4,
+                        spanGaps: true,
+                        tension: 0.1
+                    },
+                    {
+                        label: 'Xona X18 X5 SNR (5X)',
+                        data: x5,
+                        borderColor: '#10b981',
+                        backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                        borderWidth: 2,
+                        pointRadius: 1,
+                        pointHoverRadius: 4,
+                        spanGaps: true,
+                        tension: 0.1
+                    }
+                ];
+
+                if (gpsBestSnrAligned.size > 0) {
+                    datasets.push({
+                        label: 'Best GPS SNR (Benchmark)',
+                        data: gpsVals,
+                        borderColor: '#9ca3af',
+                        backgroundColor: 'transparent',
+                        borderWidth: 1.5,
+                        borderDash: [3, 3],
+                        pointRadius: 0,
+                        pointHoverRadius: 3,
+                        spanGaps: true,
+                        tension: 0.1
+                    });
+                }
+            }
+
+            if (activeChart) {
+                activeChart.destroy();
+            }
+
+            const ctx = document.getElementById('snrChart').getContext('2d');
+            activeChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: times,
+                    datasets: datasets
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {
+                        mode: 'index',
+                        intersect: false
+                    },
+                    plugins: {
+                        legend: {
+                            position: 'top',
+                            labels: {
+                                color: '#9ca3af',
+                                font: { family: 'Inter' }
+                            }
+                        }
+                    },
+                    scales: {
+                        x: {
+                            grid: { color: 'rgba(255, 255, 255, 0.05)' },
+                            ticks: {
+                                color: '#9ca3af',
+                                font: { family: 'Inter' },
+                                maxRotation: 0,
+                                autoSkip: true,
+                                maxTicksLimit: 12,
+                                callback: function(val, index) {
+                                    const label = this.getLabelForValue(val);
+                                    if (label && label.includes(' ')) {
+                                        return label.split(' ')[1];
+                                    }
+                                    return label;
+                                }
+                            }
+                        },
+                        y: {
+                            grid: { color: 'rgba(255, 255, 255, 0.05)' },
+                            title: {
+                                display: true,
+                                text: 'SNR (dB-Hz)',
+                                color: '#9ca3af',
+                                font: { family: 'Inter', weight: 'bold' }
+                            },
+                            ticks: {
+                                color: '#9ca3af',
+                                font: { family: 'Inter' }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        // GPS Checkbox listener
+        document.getElementById('chk-gps').addEventListener('change', (e) => {
+            if (activeChart) {
+                const idx = activeChart.data.datasets.findIndex(d => d.label === 'Best GPS SNR (Benchmark)');
+                if (idx !== -1) {
+                    activeChart.setDatasetVisibility(idx, e.target.checked);
+                    activeChart.update();
+                }
+            }
+        });
+
+        // Export CSV button handler
+        document.getElementById('btn-export').addEventListener('click', () => {
+            if (!file1Data) return;
+            
+            let csvContent = "data:text/csv;charset=utf-8,";
+            let csvName = "";
+            const showGps = gpsBestSnrAligned.size > 0;
+
+            if (file2Data) {
+                let header = "Time (GPS),File1 X1 SNR (dB-Hz),File1 X5 SNR (dB-Hz),File2 X1 SNR (dB-Hz),File2 X5 SNR (dB-Hz)";
+                if (showGps) header += ",Best GPS SNR (dB-Hz)";
+                csvContent += header + "\n";
+                
+                const allTimesSet = new Set();
+                file1Data.records.forEach(r => allTimesSet.add(r.time));
+                file2Data.records.forEach(r => allTimesSet.add(r.time));
+                const times = Array.from(allTimesSet).sort();
+
+                const dict1 = new Map(file1Data.records.map(r => [r.time, r]));
+                const dict2 = new Map(file2Data.records.map(r => [r.time, r]));
+
+                times.forEach(t => {
+                    const r1 = dict1.get(t);
+                    const r2 = dict2.get(t);
+                    const x1_1 = r1 && r1.x1 !== null ? r1.x1 : "";
+                    const x5_1 = r1 && r1.x5 !== null ? r1.x5 : "";
+                    const x1_2 = r2 && r2.x1 !== null ? r2.x1 : "";
+                    const x5_2 = r2 && r2.x5 !== null ? r2.x5 : "";
+                    
+                    let row = `${t},${x1_1},${x5_1},${x1_2},${x5_2}`;
+                    if (showGps) {
+                        const tow = r1 ? r1.tow : (r2 ? r2.tow : null);
+                        const gpsVal = tow !== null ? gpsBestSnrAligned.get(tow) || "" : "";
+                        row += `,${gpsVal}`;
+                    }
+                    csvContent += row + "\n";
+                });
+
+                const name1 = file1Data.name.substring(0, file1Data.name.lastIndexOf('.'));
+                const name2 = file2Data.name.substring(0, file2Data.name.lastIndexOf('.'));
+                csvName = `${name1}_vs_${name2}_snr.csv`;
+            } else {
+                let header = "Time (GPS),TOW (s),X1 SNR (dB-Hz),X5 SNR (dB-Hz)";
+                if (showGps) header += ",Best GPS SNR (dB-Hz)";
+                csvContent += header + "\n";
+                
+                file1Data.records.forEach(r => {
+                    const x1Val = r.x1 !== null ? r.x1 : "";
+                    const x5Val = r.x5 !== null ? r.x5 : "";
+                    let row = `${r.time},${r.tow},${x1Val},${x5Val}`;
+                    if (showGps) {
+                        const gpsVal = gpsBestSnrAligned.get(r.tow) || "";
+                        row += `,${gpsVal}`;
+                    }
+                    csvContent += row + "\n";
+                });
+                const name1 = file1Data.name.substring(0, file1Data.name.lastIndexOf('.'));
+                csvName = `${name1}_snr.csv`;
+            }
+            
+            const encodedUri = encodeURI(csvContent);
+            const link = document.createElement("a");
+            link.setAttribute("href", encodedUri);
+            link.setAttribute("download", csvName);
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        });
+    </script>
+</body>
+</html>

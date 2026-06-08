@@ -1,0 +1,12 @@
+*.log
+*.rtcm3
+*.obs
+*.nav
+*.bin
+*.png
+*.gif
+*.csv
+*.html
+!xona_snr_viewer.html
+__pycache__/
+.DS_Store
