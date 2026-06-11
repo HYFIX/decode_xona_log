@@ -26,13 +26,13 @@ python plot_xona_snr.py 2026-06-07-21-XONAH1P00004.log
 ```
 
 #### Overlay GPS SNR Benchmark
-Decode type `1077` (MSM7 GPS) packets and overlay the highest GPS satellite SNR as a grey benchmark line:
+Decode type `1077` (MSM7 GPS) packets, automatically select the single best GPS satellite (must have both L1 and L5 signals, with the highest average L1 SNR during the Xona pass), and overlay its L1 and L5 SNR series as benchmarks:
 ```bash
 python plot_xona_snr.py 2026-06-07-21-XONAH1P00004.log --gps
 ```
 
 #### Dual File Comparison
-Overlay two receiver log files on the same timeline:
+Overlay two receiver log files on the same timeline with the GPS benchmark satellite overlays:
 ```bash
 python plot_xona_snr.py 2026-06-07-21-XONAH1P00004.log -c 2026-06-07-21-XONAH1P00005.log -o comparison_plot --gps
 ```
@@ -46,7 +46,7 @@ python plot_xona_snr.py 2026-06-07-21-XONAH1P00004.log -c 2026-06-07-21-XONAH1P0
 
 ### Command Options
 - `-c`, `--compare` `[FILE]`: Path to second log file to compare.
-- `--gps`: Enable GPS highest SNR benchmark overlay.
+- `--gps`: Enable GPS L1/L5 dual benchmark overlays (automatically selects the single best satellite).
 - `--animate` `[FILE]`: Generate an animated video cut (defaults to `.gif`).
 - `-o`, `--output` `[NAME]`: Base output filename.
 - `--csv` `[FILE]`: Export aligned data to CSV.
@@ -61,8 +61,9 @@ python plot_xona_snr.py 2026-06-07-21-XONAH1P00004.log -c 2026-06-07-21-XONAH1P0
 1. Double-click `xona_snr_viewer.html` to open it in any modern browser.
 2. Drag and drop **one or two** raw RTCM3 binary log files (`.log` or `.rtcm3`) into the drop zone.
 3. The dashboard decodes the binary streams client-side in under 100ms and displays aligned SNR curves.
-4. Use the "Show GPS SNR Benchmark" checkbox in the chart header to toggle the GPS benchmark line.
-5. Click **"Export CSV"** to save the aligned dataset.
+4. If GPS data is present, the decoder automatically selects the best GPS satellite with both L1 and L5 signals available, computes time-aligned stats, and displays them on the dashboard.
+5. Use the independent checkboxes in the chart header (e.g. `Show GPS Gxx L1 Benchmark`) to toggle the benchmark lines.
+6. Click **"Export CSV"** to save the aligned dataset.
 
 ---
 

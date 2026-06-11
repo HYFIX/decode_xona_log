@@ -390,6 +390,22 @@
             });
         }
 
+        function getGpsSigType(sigIdx) {
+            const sigMap = {
+                1: "1C", 2: "1P", 3: "1W", 4: "1Y", 5: "1M",
+                7: "2C", 8: "2P", 9: "2W", 10: "2Y", 11: "2M",
+                14: "2S", 15: "2L", 16: "2X",
+                21: "5I", 22: "5Q", 23: "5X"
+            };
+            const sigName = sigMap[sigIdx] || "";
+            if (sigName.startsWith("1")) {
+                return "L1";
+            } else if (sigName.startsWith("5")) {
+                return "L5";
+            }
+            return null;
+        }
+
         // Decode logic for single buffer (decodes XONA 4045 and GPS 1077)
         function decodeRtcmBuffer(buffer, filename) {
             const n = buffer.length;
@@ -542,16 +558,33 @@
                                 bitPos += nsat * 36; // Skip satellite data block
                                 const cnrStart = bitPos + ncell * 55;
 
-                                const snrs = [];
-                                for (let c = 0; c < ncell; c++) {
-                                    const cnrVal = getbitu(packet, cnrStart + c * 10, 10) * 0.0625;
-                                    snrs.push(cnrVal);
+                                let cellIdx = 0;
+                                const towObs = new Map();
+                                for (let r = 0; r < nsat; r++) {
+                                    for (let s = 0; s < nsig; s++) {
+                                        if (cellmask[r * nsig + s]) {
+                                            const cnrVal = getbitu(packet, cnrStart + cellIdx * 10, 10) * 0.0625;
+                                            const sigType = getGpsSigType(sigs[s]);
+                                            if (sigType) {
+                                                const sat = sats[r];
+                                                if (!towObs.has(sat)) {
+                                                    towObs.set(sat, { l1: [], l5: [] });
+                                                }
+                                                towObs.get(sat)[sigType.toLowerCase()].push(cnrVal);
+                                            }
+                                            cellIdx++;
+                                        }
+                                    }
                                 }
 
-                                if (snrs.length > 0) {
-                                    const maxVal = Math.max(...snrs);
-                                    gpsBestSnr.set(tow, maxVal);
+                                const epochGps = new Map();
+                                for (const [sat, obs] of towObs) {
+                                    epochGps.set(sat, {
+                                        l1: obs.l1.length > 0 ? Math.max(...obs.l1) : null,
+                                        l5: obs.l5.length > 0 ? Math.max(...obs.l5) : null
+                                    });
                                 }
+                                gpsBestSnr.set(tow, epochGps);
                             }
                         }
                         idx += 6 + length;
@@ -565,8 +598,126 @@
 
         let file1Data = null;
         let file2Data = null;
-        let gpsBestSnrAligned = new Map();
+        let gpsBestSnrAligned = new Map(); // merged tow -> Map(sat -> {l1, l5})
+        let selectedGpsSat = null;
+        let gpsL1Series = new Map(); // tow -> l1
+        let gpsL5Series = new Map(); // tow -> l5
         let activeChart = null;
+
+        function mergeGpsObs(obs1, obs2) {
+            const merged = new Map();
+            const allTows = new Set([...obs1.keys(), ...(obs2 ? obs2.keys() : [])]);
+            for (const tow of allTows) {
+                const towMap = new Map();
+                const sats = new Set([
+                    ...(obs1.has(tow) ? obs1.get(tow).keys() : []),
+                    ...(obs2 && obs2.has(tow) ? obs2.get(tow).keys() : [])
+                ]);
+                for (const sat of sats) {
+                    const o1 = obs1.has(tow) && obs1.get(tow).has(sat) ? obs1.get(tow).get(sat) : {};
+                    const o2 = obs2 && obs2.has(tow) && obs2.get(tow).has(sat) ? obs2.get(tow).get(sat) : {};
+                    
+                    const l1_1 = o1.l1;
+                    const l1_2 = o2.l1;
+                    let l1Val = null;
+                    if (l1_1 !== undefined && l1_1 !== null && l1_2 !== undefined && l1_2 !== null) {
+                        l1Val = Math.max(l1_1, l1_2);
+                    } else if (l1_1 !== undefined && l1_1 !== null) {
+                        l1Val = l1_1;
+                    } else if (l1_2 !== undefined && l1_2 !== null) {
+                        l1Val = l1_2;
+                    }
+                    
+                    const l5_1 = o1.l5;
+                    const l5_2 = o2.l5;
+                    let l5Val = null;
+                    if (l5_1 !== undefined && l5_1 !== null && l5_2 !== undefined && l5_2 !== null) {
+                        l5Val = Math.max(l5_1, l5_2);
+                    } else if (l5_1 !== undefined && l5_1 !== null) {
+                        l5Val = l5_1;
+                    } else if (l5_2 !== undefined && l5_2 !== null) {
+                        l5Val = l5_2;
+                    }
+                    
+                    towMap.set(sat, { l1: l1Val, l5: l5Val });
+                }
+                merged.set(tow, towMap);
+            }
+            return merged;
+        }
+
+        function selectBestGpsSatellite(records1, records2, gpsObsData) {
+            const xonaTows = new Set(records1.map(r => r.tow));
+            if (records2) {
+                records2.forEach(r => xonaTows.add(r.tow));
+            }
+
+            const satL1Vals = new Map();
+            const satL5Vals = new Map();
+
+            for (const tow of xonaTows) {
+                if (gpsObsData.has(tow)) {
+                    const towObs = gpsObsData.get(tow);
+                    for (const [sat, obs] of towObs) {
+                        if (obs.l1 !== null) {
+                            if (!satL1Vals.has(sat)) satL1Vals.set(sat, []);
+                            satL1Vals.get(sat).push(obs.l1);
+                        }
+                        if (obs.l5 !== null) {
+                            if (!satL5Vals.has(sat)) satL5Vals.set(sat, []);
+                            satL5Vals.get(sat).push(obs.l5);
+                        }
+                    }
+                }
+            }
+
+            const candidates = [];
+            for (const sat of satL1Vals.keys()) {
+                if (satL5Vals.has(sat)) {
+                    const l1Cnt = satL1Vals.get(sat).length;
+                    const l5Cnt = satL5Vals.get(sat).length;
+                    if (l1Cnt > 0 && l5Cnt > 0) {
+                        candidates.push(sat);
+                    }
+                }
+            }
+
+            if (candidates.length === 0) {
+                console.warn("No GPS satellite found with both L1 and L5 signals. Falling back to any satellite with L1.");
+                for (const sat of satL1Vals.keys()) {
+                    if (satL1Vals.get(sat).length > 0) {
+                        candidates.push(sat);
+                    }
+                }
+            }
+
+            if (candidates.length === 0) {
+                return { bestSat: null, gpsL1Aligned: new Map(), gpsL5Aligned: new Map() };
+            }
+
+            let bestSat = null;
+            let bestL1Avg = -999.0;
+
+            for (const sat of candidates) {
+                const l1s = satL1Vals.get(sat);
+                const avgL1 = l1s.reduce((a, b) => a + b, 0) / l1s.length;
+                if (avgL1 > bestL1Avg) {
+                    bestL1Avg = avgL1;
+                    bestSat = sat;
+                }
+            }
+
+            const gpsL1Aligned = new Map();
+            const gpsL5Aligned = new Map();
+            for (const [tow, obs] of gpsObsData) {
+                if (obs.has(bestSat)) {
+                    gpsL1Aligned.set(tow, obs.get(bestSat).l1);
+                    gpsL5Aligned.set(tow, obs.get(bestSat).l5);
+                }
+            }
+
+            return { bestSat, gpsL1Aligned, gpsL5Aligned };
+        }
 
         function processFiles(files) {
             const loadPromises = files.slice(0, 2).map(readFileAsArrayBuffer);
@@ -600,15 +751,18 @@
                     file2Data = null;
                 }
 
-                // Merge GPS best SNR from both files (if available)
-                gpsBestSnrAligned = new Map(file1Data.gpsBestSnr);
-                if (file2Data) {
-                    for (const [tow, val] of file2Data.gpsBestSnr) {
-                        if (!gpsBestSnrAligned.has(tow) || val > gpsBestSnrAligned.get(tow)) {
-                            gpsBestSnrAligned.set(tow, val);
-                        }
-                    }
-                }
+                // Merge GPS observations from both files
+                gpsBestSnrAligned = mergeGpsObs(file1Data.gpsBestSnr, file2Data ? file2Data.gpsBestSnr : null);
+
+                // Select the best GPS satellite (both L1/L5, highest L1 average SNR during Xona pass)
+                const selection = selectBestGpsSatellite(
+                    file1Data.records,
+                    file2Data ? file2Data.records : null,
+                    gpsBestSnrAligned
+                );
+                selectedGpsSat = selection.bestSat;
+                gpsL1Series = selection.gpsL1Aligned;
+                gpsL5Series = selection.gpsL5Aligned;
 
                 const t1 = performance.now();
                 const decodeTime = (t1 - t0).toFixed(1) + ' ms';
@@ -630,9 +784,14 @@
             const chkContainer = document.getElementById('chart-controls');
 
             // Render GPS control checkbox visibility
-            if (gpsBestSnrAligned.size > 0) {
+            if (selectedGpsSat !== null) {
+                chkContainer.innerHTML = `
+                    <input type="checkbox" id="chk-gps-l1" checked>
+                    <label for="chk-gps-l1">Show GPS G${selectedGpsSat} L1 Benchmark</label>
+                    <input type="checkbox" id="chk-gps-l5" checked style="margin-left: 16px;">
+                    <label for="chk-gps-l5">Show GPS G${selectedGpsSat} L5 Benchmark</label>
+                `;
                 chkContainer.style.display = 'flex';
-                document.getElementById('chk-gps').checked = true;
             } else {
                 chkContainer.style.display = 'none';
             }
@@ -736,6 +895,31 @@
                     </div>
                 `;
             }
+
+            if (selectedGpsSat !== null) {
+                statsHtml += `
+                    <h3 class="stats-section-title" style="margin-top: 16px;">GPS Benchmark: G${selectedGpsSat}</h3>
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <div class="stat-title">G${selectedGpsSat} L1 Max SNR</div>
+                            <div class="stat-value gps-l1" id="gps-l1-max">-</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-title">G${selectedGpsSat} L1 Average SNR</div>
+                            <div class="stat-value gps-l1" id="gps-l1-mean">-</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-title">G${selectedGpsSat} L5 Max SNR</div>
+                            <div class="stat-value gps-l5" id="gps-l5-max">-</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-title">G${selectedGpsSat} L5 Average SNR</div>
+                            <div class="stat-value gps-l5" id="gps-l5-mean">-</div>
+                        </div>
+                    </div>
+                `;
+            }
+
             statsContainer.innerHTML = statsHtml;
 
             // Calculate and display statistics
@@ -765,6 +949,20 @@
                 }
             }
 
+            if (selectedGpsSat !== null) {
+                const gpsL1Vals = file1Data.records.map(r => gpsL1Series.get(r.tow)).filter(v => v !== null && v !== undefined);
+                const gpsL5Vals = file1Data.records.map(r => gpsL5Series.get(r.tow)).filter(v => v !== null && v !== undefined);
+
+                if (gpsL1Vals.length > 0) {
+                    document.getElementById('gps-l1-max').innerText = Math.max(...gpsL1Vals).toFixed(2) + ' dB-Hz';
+                    document.getElementById('gps-l1-mean').innerText = (gpsL1Vals.reduce((a, b) => a + b, 0) / gpsL1Vals.length).toFixed(2) + ' dB-Hz';
+                }
+                if (gpsL5Vals.length > 0) {
+                    document.getElementById('gps-l5-max').innerText = Math.max(...gpsL5Vals).toFixed(2) + ' dB-Hz';
+                    document.getElementById('gps-l5-mean').innerText = (gpsL5Vals.reduce((a, b) => a + b, 0) / gpsL5Vals.length).toFixed(2) + ' dB-Hz';
+                }
+            }
+
             // Setup chart datasets and labels
             let times = [];
             let datasets = [];
@@ -783,7 +981,8 @@
                 const x5_1 = [];
                 const x1_2 = [];
                 const x5_2 = [];
-                const gpsVals = [];
+                const gpsL1Vals = [];
+                const gpsL5Vals = [];
 
                 times.forEach(t => {
                     const r1 = dict1.get(t);
@@ -795,7 +994,8 @@
                     x5_2.push(r2 ? r2.x5 : null);
                     
                     const tow = r1 ? r1.tow : (r2 ? r2.tow : null);
-                    gpsVals.push(tow !== null ? gpsBestSnrAligned.get(tow) || null : null);
+                    gpsL1Vals.push(tow !== null ? gpsL1Series.get(tow) || null : null);
+                    gpsL5Vals.push(tow !== null ? gpsL5Series.get(tow) || null : null);
                 });
 
                 datasets = [
@@ -847,14 +1047,26 @@
                     }
                 ];
 
-                if (gpsBestSnrAligned.size > 0) {
+                if (selectedGpsSat !== null) {
                     datasets.push({
-                        label: 'Best GPS SNR (Benchmark)',
-                        data: gpsVals,
+                        label: `GPS G${selectedGpsSat} L1 SNR (Benchmark)`,
+                        data: gpsL1Vals,
                         borderColor: '#9ca3af',
                         backgroundColor: 'transparent',
                         borderWidth: 1.5,
                         borderDash: [3, 3],
+                        pointRadius: 0,
+                        pointHoverRadius: 3,
+                        spanGaps: true,
+                        tension: 0.1
+                    });
+                    datasets.push({
+                        label: `GPS G${selectedGpsSat} L5 SNR (Benchmark)`,
+                        data: gpsL5Vals,
+                        borderColor: '#6b7280',
+                        backgroundColor: 'transparent',
+                        borderWidth: 1.5,
+                        borderDash: [5, 5],
                         pointRadius: 0,
                         pointHoverRadius: 3,
                         spanGaps: true,
@@ -865,7 +1077,8 @@
                 times = file1Data.records.map(r => r.time);
                 const x1 = file1Data.records.map(r => r.x1);
                 const x5 = file1Data.records.map(r => r.x5);
-                const gpsVals = file1Data.records.map(r => gpsBestSnrAligned.get(r.tow) || null);
+                const gpsL1Vals = file1Data.records.map(r => gpsL1Series.get(r.tow) || null);
+                const gpsL5Vals = file1Data.records.map(r => gpsL5Series.get(r.tow) || null);
 
                 datasets = [
                     {
@@ -892,14 +1105,26 @@
                     }
                 ];
 
-                if (gpsBestSnrAligned.size > 0) {
+                if (selectedGpsSat !== null) {
                     datasets.push({
-                        label: 'Best GPS SNR (Benchmark)',
-                        data: gpsVals,
+                        label: `GPS G${selectedGpsSat} L1 SNR (Benchmark)`,
+                        data: gpsL1Vals,
                         borderColor: '#9ca3af',
                         backgroundColor: 'transparent',
                         borderWidth: 1.5,
                         borderDash: [3, 3],
+                        pointRadius: 0,
+                        pointHoverRadius: 3,
+                        spanGaps: true,
+                        tension: 0.1
+                    });
+                    datasets.push({
+                        label: `GPS G${selectedGpsSat} L5 SNR (Benchmark)`,
+                        data: gpsL5Vals,
+                        borderColor: '#6b7280',
+                        backgroundColor: 'transparent',
+                        borderWidth: 1.5,
+                        borderDash: [5, 5],
                         pointRadius: 0,
                         pointHoverRadius: 3,
                         spanGaps: true,
@@ -969,18 +1194,29 @@
                     }
                 }
             });
-        }
 
-        // GPS Checkbox listener
-        document.getElementById('chk-gps').addEventListener('change', (e) => {
-            if (activeChart) {
-                const idx = activeChart.data.datasets.findIndex(d => d.label === 'Best GPS SNR (Benchmark)');
-                if (idx !== -1) {
-                    activeChart.setDatasetVisibility(idx, e.target.checked);
-                    activeChart.update();
-                }
+            // Add toggle listeners
+            const chkGpsL1 = document.getElementById('chk-gps-l1');
+            if (chkGpsL1) {
+                chkGpsL1.addEventListener('change', (e) => {
+                    const idx = activeChart.data.datasets.findIndex(d => d.label === `GPS G${selectedGpsSat} L1 SNR (Benchmark)`);
+                    if (idx !== -1) {
+                        activeChart.setDatasetVisibility(idx, e.target.checked);
+                        activeChart.update();
+                    }
+                });
             }
-        });
+            const chkGpsL5 = document.getElementById('chk-gps-l5');
+            if (chkGpsL5) {
+                chkGpsL5.addEventListener('change', (e) => {
+                    const idx = activeChart.data.datasets.findIndex(d => d.label === `GPS G${selectedGpsSat} L5 SNR (Benchmark)`);
+                    if (idx !== -1) {
+                        activeChart.setDatasetVisibility(idx, e.target.checked);
+                        activeChart.update();
+                    }
+                });
+            }
+        }
 
         // Export CSV button handler
         document.getElementById('btn-export').addEventListener('click', () => {
@@ -988,12 +1224,13 @@
             
             let csvContent = "data:text/csv;charset=utf-8,";
             let csvName = "";
-            const showGps = gpsBestSnrAligned.size > 0;
+            const showGps = selectedGpsSat !== null;
 
             if (file2Data) {
                 let header = "Time (GPS),File1 X1 SNR (dB-Hz),File1 X5 SNR (dB-Hz),File2 X1 SNR (dB-Hz),File2 X5 SNR (dB-Hz)";
-                if (showGps) header += ",Best GPS SNR (dB-Hz)";
-                csvContent += header + "\n";
+                if (showGps) header += `,GPS G${selectedGpsSat} L1 SNR (dB-Hz),GPS G${selectedGpsSat} L5 SNR (dB-Hz)`;
+                csvContent += header + "
+";
                 
                 const allTimesSet = new Set();
                 file1Data.records.forEach(r => allTimesSet.add(r.time));
@@ -1014,10 +1251,12 @@
                     let row = `${t},${x1_1},${x5_1},${x1_2},${x5_2}`;
                     if (showGps) {
                         const tow = r1 ? r1.tow : (r2 ? r2.tow : null);
-                        const gpsVal = tow !== null ? gpsBestSnrAligned.get(tow) || "" : "";
-                        row += `,${gpsVal}`;
+                        const gpsL1 = tow !== null ? gpsL1Series.get(tow) || "" : "";
+                        const gpsL5 = tow !== null ? gpsL5Series.get(tow) || "" : "";
+                        row += `,${gpsL1},${gpsL5}`;
                     }
-                    csvContent += row + "\n";
+                    csvContent += row + "
+";
                 });
 
                 const name1 = file1Data.name.substring(0, file1Data.name.lastIndexOf('.'));
@@ -1025,18 +1264,21 @@
                 csvName = `${name1}_vs_${name2}_snr.csv`;
             } else {
                 let header = "Time (GPS),TOW (s),X1 SNR (dB-Hz),X5 SNR (dB-Hz)";
-                if (showGps) header += ",Best GPS SNR (dB-Hz)";
-                csvContent += header + "\n";
+                if (showGps) header += `,GPS G${selectedGpsSat} L1 SNR (dB-Hz),GPS G${selectedGpsSat} L5 SNR (dB-Hz)`;
+                csvContent += header + "
+";
                 
                 file1Data.records.forEach(r => {
                     const x1Val = r.x1 !== null ? r.x1 : "";
                     const x5Val = r.x5 !== null ? r.x5 : "";
                     let row = `${r.time},${r.tow},${x1Val},${x5Val}`;
                     if (showGps) {
-                        const gpsVal = gpsBestSnrAligned.get(r.tow) || "";
-                        row += `,${gpsVal}`;
+                        const gpsL1 = gpsL1Series.get(r.tow) || "";
+                        const gpsL5 = gpsL5Series.get(r.tow) || "";
+                        row += `,${gpsL1},${gpsL5}`;
                     }
-                    csvContent += row + "\n";
+                    csvContent += row + "
+";
                 });
                 const name1 = file1Data.name.substring(0, file1Data.name.lastIndexOf('.'));
                 csvName = `${name1}_snr.csv`;

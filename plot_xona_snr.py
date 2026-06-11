@@ -46,6 +46,114 @@ def get_gps_week_start(ref_date):
     gps_week_start = ref_date - timedelta(days=days_to_subtract)
     return datetime(gps_week_start.year, gps_week_start.month, gps_week_start.day, 0, 0, 0)
 
+def get_gps_sig_type(sig_idx):
+    sig_map = {
+        1: "1C", 2: "1P", 3: "1W", 4: "1Y", 5: "1M",
+        7: "2C", 8: "2P", 9: "2W", 10: "2Y", 11: "2M",
+        14: "2S", 15: "2L", 16: "2X",
+        21: "5I", 22: "5Q", 23: "5X"
+    }
+    sig_name = sig_map.get(sig_idx, "")
+    if sig_name.startswith("1"):
+        return "L1"
+    elif sig_name.startswith("5"):
+        return "L5"
+    return None
+
+def merge_gps_obs(obs1, obs2):
+    merged = {}
+    all_tows = set(obs1.keys()) | set(obs2.keys())
+    for tow in all_tows:
+        merged[tow] = {}
+        sats = set(obs1.get(tow, {}).keys()) | set(obs2.get(tow, {}).keys())
+        for sat in sats:
+            o1 = obs1.get(tow, {}).get(sat, {})
+            o2 = obs2.get(tow, {}).get(sat, {})
+            
+            l1_1 = o1.get('l1')
+            l1_2 = o2.get('l1')
+            l1_val = None
+            if l1_1 is not None and l1_2 is not None:
+                l1_val = max(l1_1, l1_2)
+            elif l1_1 is not None:
+                l1_val = l1_1
+            elif l1_2 is not None:
+                l1_val = l1_2
+                
+            l5_1 = o1.get('l5')
+            l5_2 = o2.get('l5')
+            l5_val = None
+            if l5_1 is not None and l5_2 is not None:
+                l5_val = max(l5_1, l5_2)
+            elif l5_1 is not None:
+                l5_val = l5_1
+            elif l5_2 is not None:
+                l5_val = l5_2
+                
+            merged[tow][sat] = {'l1': l1_val, 'l5': l5_val}
+    return merged
+
+def select_best_gps_satellite(records1, records2, gps_obs_data):
+    xona_tows = set(r['tow'] for r in records1)
+    if records2:
+        xona_tows.update(r['tow'] for r in records2)
+        
+    sat_l1_vals = {}
+    sat_l5_vals = {}
+    
+    for tow in xona_tows:
+        if tow in gps_obs_data:
+            for sat, obs in gps_obs_data[tow].items():
+                if obs['l1'] is not None:
+                    if sat not in sat_l1_vals:
+                        sat_l1_vals[sat] = []
+                    sat_l1_vals[sat].append(obs['l1'])
+                if obs['l5'] is not None:
+                    if sat not in sat_l5_vals:
+                        sat_l5_vals[sat] = []
+                    sat_l5_vals[sat].append(obs['l5'])
+                    
+    candidates = []
+    for sat in set(sat_l1_vals.keys()) & set(sat_l5_vals.keys()):
+        l1_cnt = len(sat_l1_vals[sat])
+        l5_cnt = len(sat_l5_vals[sat])
+        if l1_cnt > 0 and l5_cnt > 0:
+            candidates.append(sat)
+            
+    if not candidates:
+        print("Warning: No GPS satellite found with both L1 and L5 signals. Falling back to any satellite with L1.")
+        candidates = [sat for sat in sat_l1_vals.keys() if len(sat_l1_vals[sat]) > 0]
+        
+    if not candidates:
+        return None, {}, {}
+        
+    best_sat = None
+    best_l1_avg = -999.0
+    for sat in candidates:
+        avg_l1 = sum(sat_l1_vals[sat]) / len(sat_l1_vals[sat])
+        if avg_l1 > best_l1_avg:
+            best_l1_avg = avg_l1
+            best_sat = sat
+            
+    print(f"\n==================================================")
+    print(f"GPS Satellite Selection for Benchmark:")
+    print(f"==================================================")
+    print(f"Selected GPS Satellite: G{best_sat}")
+    print(f"Average L1 SNR during Xona pass: {best_l1_avg:.2f} dB-Hz (count={len(sat_l1_vals[best_sat])})")
+    if best_sat in sat_l5_vals:
+        avg_l5 = sum(sat_l5_vals[best_sat]) / len(sat_l5_vals[best_sat])
+        print(f"Average L5 SNR during Xona pass: {avg_l5:.2f} dB-Hz (count={len(sat_l5_vals[best_sat])})")
+    print(f"==================================================\n")
+    
+    gps_l1_series = {}
+    gps_l5_series = {}
+    for tow, obs in gps_obs_data.items():
+        if best_sat in obs:
+            gps_l1_series[tow] = obs[best_sat]['l1']
+            gps_l5_series[tow] = obs[best_sat]['l5']
+            
+    return best_sat, gps_l1_series, gps_l5_series
+
 def decode_rtcm3_log(filename, target_svid=249):
     print(f"Decoding RTCM3 raw data stream: {filename}...")
     with open(filename, 'rb') as f:
@@ -194,14 +302,26 @@ def decode_rtcm3_log(filename, target_svid=249):
                         bit_pos += nsat * 36
                         cnr_start = bit_pos + ncell * 55
                         
-                        snrs = []
-                        for c in range(ncell):
-                            cnr_val = getbitu(packet_bytes, cnr_start + c * 10, 10) * 0.0625
-                            snrs.append(cnr_val)
-                            
-                        if snrs:
-                            gps_best_snr[tow] = max(snrs)
-
+                        cell_idx = 0
+                        tow_obs = {}
+                        for r_idx, sat in enumerate(sats):
+                            for s_idx, sig in enumerate(sigs):
+                                if cellmask[r_idx * nsig + s_idx]:
+                                    cnr_val = getbitu(packet_bytes, cnr_start + cell_idx * 10, 10) * 0.0625
+                                    sig_type = get_gps_sig_type(sig)
+                                    if sig_type in ("L1", "L5"):
+                                        if sat not in tow_obs:
+                                            tow_obs[sat] = {'l1': [], 'l5': []}
+                                        tow_obs[sat][sig_type.lower()].append(cnr_val)
+                                    cell_idx += 1
+                        
+                        gps_best_snr[tow] = {}
+                        for sat, obs in tow_obs.items():
+                            gps_best_snr[tow][sat] = {
+                                'l1': max(obs['l1']) if obs['l1'] else None,
+                                'l5': max(obs['l5']) if obs['l5'] else None
+                            }
+ 
                     idx += 6 + length
                     continue
         idx += 1
@@ -211,6 +331,7 @@ def decode_rtcm3_log(filename, target_svid=249):
     print(f"Found {gps_count} GPS MSM7 packets.")
     print(f"Found {target_count} epochs containing Xona X18 data.")
     return records, gps_best_snr
+
 
 def merge_time_series(records1, records2):
     all_times = sorted(list(set([r['time'] for r in records1] + [r['time'] for r in records2])))
@@ -231,7 +352,7 @@ def merge_time_series(records1, records2):
         })
     return merged, all_times
 
-def generate_html_plot(records1, records2, gps_best_snr, log_filepath1, log_filepath2, show_gps, output_html_path):
+def generate_html_plot(records1, records2, gps_l1_series, gps_l5_series, selected_gps_prn, log_filepath1, log_filepath2, show_gps, output_html_path):
     log_name1 = os.path.basename(log_filepath1)
     log_name2 = os.path.basename(log_filepath2) if log_filepath2 else None
     
@@ -241,7 +362,8 @@ def generate_html_plot(records1, records2, gps_best_snr, log_filepath1, log_file
         x5_1 = [m['x5_1'] for m in merged]
         x1_2 = [m['x1_2'] for m in merged]
         x5_2 = [m['x5_2'] for m in merged]
-        gps_vals = [gps_best_snr.get(m['tow'], None) for m in merged] if show_gps else []
+        gps_l1_vals = [gps_l1_series.get(m['tow'], None) for m in merged] if (show_gps and selected_gps_prn) else []
+        gps_l5_vals = [gps_l5_series.get(m['tow'], None) for m in merged] if (show_gps and selected_gps_prn) else []
         title_text = "Xona X18 SNR Comparison"
         subtitle_text = f"Comparing: <strong>{log_name1}</strong> (Solid) vs <strong>{log_name2}</strong> (Dashed)"
     else:
@@ -250,19 +372,46 @@ def generate_html_plot(records1, records2, gps_best_snr, log_filepath1, log_file
         x5_1 = [r['x5'] for r in records1]
         x1_2 = []
         x5_2 = []
-        gps_vals = [gps_best_snr.get(r['tow'], None) for r in records1] if show_gps else []
+        gps_l1_vals = [gps_l1_series.get(r['tow'], None) for r in records1] if (show_gps and selected_gps_prn) else []
+        gps_l5_vals = [gps_l5_series.get(r['tow'], None) for r in records1] if (show_gps and selected_gps_prn) else []
         title_text = "Xona X18 SNR Analysis"
         subtitle_text = f"Decoded from RTCM3 raw stream: <strong>{log_name1}</strong>"
         
     file2_stats_html = ""
     gps_control_html = ""
-    if show_gps:
-        gps_control_html = """
+    gps_stats_html = ""
+    
+    if show_gps and selected_gps_prn:
+        gps_control_html = f"""
             <div class="control-row">
-                <input type="checkbox" id="chk-gps" checked>
-                <label for="chk-gps">Show GPS SNR Benchmark</label>
+                <input type="checkbox" id="chk-gps-l1" checked>
+                <label for="chk-gps-l1">Show GPS G{selected_gps_prn} L1 Benchmark</label>
+                <input type="checkbox" id="chk-gps-l5" checked style="margin-left: 16px;">
+                <label for="chk-gps-l5">Show GPS G{selected_gps_prn} L5 Benchmark</label>
             </div>
         """
+        gps_stats_html = f"""
+            <h3 class="stats-section-title">GPS Benchmark: G{selected_gps_prn}</h3>
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-title">G{selected_gps_prn} L1 Max SNR</div>
+                    <div class="stat-value gps-l1" id="gps-l1-max">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-title">G{selected_gps_prn} L1 Mean SNR</div>
+                    <div class="stat-value gps-l1" id="gps-l1-mean">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-title">G{selected_gps_prn} L5 Max SNR</div>
+                    <div class="stat-value gps-l5" id="gps-l5-max">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-title">G{selected_gps_prn} L5 Mean SNR</div>
+                    <div class="stat-value gps-l5" id="gps-l5-mean">-</div>
+                </div>
+            </div>
+        """
+        
     if log_name2:
         file2_stats_html = f"""
             <h3 class="stats-section-title">File 2: {log_name2}</h3>
@@ -308,6 +457,8 @@ def generate_html_plot(records1, records2, gps_best_snr, log_filepath1, log_file
             --accent-x5: #10b981;
             --accent2-x1: #f59e0b;
             --accent2-x5: #ef4444;
+            --accent-gps-l1: #a1a1aa;
+            --accent-gps-l5: #71717a;
             --border-color: #1f2937;
         }}
         body {{
@@ -363,7 +514,10 @@ def generate_html_plot(records1, records2, gps_best_snr, log_filepath1, log_file
             color: var(--text-muted);
             border-bottom: 1px solid var(--border-color);
             padding-bottom: 4px;
-            margin: 0;
+            margin: 16px 0 0 0;
+        }}
+        .stats-section-title:first-child {{
+            margin-top: 0;
         }}
         .stats-grid {{
             display: grid;
@@ -393,6 +547,8 @@ def generate_html_plot(records1, records2, gps_best_snr, log_filepath1, log_file
         .stat-value.x5 {{ color: var(--accent-x5); }}
         .stat-value.x1-2 {{ color: var(--accent2-x1); }}
         .stat-value.x5-2 {{ color: var(--accent2-x5); }}
+        .stat-value.gps-l1 {{ color: var(--accent-gps-l1); }}
+        .stat-value.gps-l5 {{ color: var(--accent-gps-l5); }}
         .chart-container {{
             position: relative;
             height: 520px;
@@ -457,6 +613,7 @@ def generate_html_plot(records1, records2, gps_best_snr, log_filepath1, log_file
                 </div>
             </div>
             {file2_stats_html}
+            {gps_stats_html}
         </div>
 
         <div class="card">
@@ -477,13 +634,16 @@ def generate_html_plot(records1, records2, gps_best_snr, log_filepath1, log_file
         const x5_1 = {json.dumps(x5_1)};
         const x1_2 = {json.dumps(x1_2)};
         const x5_2 = {json.dumps(x5_2)};
-        const gps = {json.dumps(gps_vals)};
+        const gps_l1 = {json.dumps(gps_l1_vals)};
+        const gps_l5 = {json.dumps(gps_l5_vals)};
 
         // Filter valid data points for stats
         const validX1_1 = x1_1.filter(v => v !== null && v !== undefined);
         const validX5_1 = x5_1.filter(v => v !== null && v !== undefined);
         const validX1_2 = x1_2.filter(v => v !== null && v !== undefined);
         const validX5_2 = x5_2.filter(v => v !== null && v !== undefined);
+        const validGpsL1 = gps_l1.filter(v => v !== null && v !== undefined);
+        const validGpsL5 = gps_l5.filter(v => v !== null && v !== undefined);
 
         if (validX1_1.length > 0) {{
             const maxVal = Math.max(...validX1_1);
@@ -509,6 +669,23 @@ def generate_html_plot(records1, records2, gps_best_snr, log_filepath1, log_file
             const meanVal = validX5_2.reduce((a, b) => a + b, 0) / validX5_2.length;
             document.getElementById('x5-max-2').innerText = maxVal.toFixed(2) + ' dB-Hz';
             document.getElementById('x5-mean-2').innerText = meanVal.toFixed(2) + ' dB-Hz';
+        }}
+
+        if (validGpsL1.length > 0) {{
+            const maxVal = Math.max(...validGpsL1);
+            const meanVal = validGpsL1.reduce((a, b) => a + b, 0) / validGpsL1.length;
+            const elMax = document.getElementById('gps-l1-max');
+            const elMean = document.getElementById('gps-l1-mean');
+            if (elMax) elMax.innerText = maxVal.toFixed(2) + ' dB-Hz';
+            if (elMean) elMean.innerText = meanVal.toFixed(2) + ' dB-Hz';
+        }}
+        if (validGpsL5.length > 0) {{
+            const maxVal = Math.max(...validGpsL5);
+            const meanVal = validGpsL5.reduce((a, b) => a + b, 0) / validGpsL5.length;
+            const elMax = document.getElementById('gps-l5-max');
+            const elMean = document.getElementById('gps-l5-mean');
+            if (elMax) elMax.innerText = maxVal.toFixed(2) + ' dB-Hz';
+            if (elMean) elMean.innerText = meanVal.toFixed(2) + ' dB-Hz';
         }}
 
         // Setup datasets
@@ -564,14 +741,28 @@ def generate_html_plot(records1, records2, gps_best_snr, log_filepath1, log_file
             }});
         }}
         
-        if (gps.length > 0) {{
+        if (gps_l1.length > 0) {{
             datasets.push({{
-                label: 'Best GPS SNR (Benchmark)',
-                data: gps,
+                label: 'GPS G{selected_gps_prn} L1 SNR (Benchmark)',
+                data: gps_l1,
                 borderColor: '#9ca3af',
                 backgroundColor: 'transparent',
                 borderWidth: 1.5,
                 borderDash: [3, 3],
+                pointRadius: 0,
+                pointHoverRadius: 3,
+                spanGaps: true,
+                tension: 0.1
+            }});
+        }}
+        if (gps_l5.length > 0) {{
+            datasets.push({{
+                label: 'GPS G{selected_gps_prn} L5 SNR (Benchmark)',
+                data: gps_l5,
+                borderColor: '#6b7280',
+                backgroundColor: 'transparent',
+                borderWidth: 1.5,
+                borderDash: [5, 5],
                 pointRadius: 0,
                 pointHoverRadius: 3,
                 spanGaps: true,
@@ -637,10 +828,20 @@ def generate_html_plot(records1, records2, gps_best_snr, log_filepath1, log_file
             }}
         }});
         
-        const chkGps = document.getElementById('chk-gps');
-        if (chkGps) {{
-            chkGps.addEventListener('change', (e) => {{
-                const idx = chart.data.datasets.findIndex(d => d.label === 'Best GPS SNR (Benchmark)');
+        const chkGpsL1 = document.getElementById('chk-gps-l1');
+        if (chkGpsL1) {{
+            chkGpsL1.addEventListener('change', (e) => {{
+                const idx = chart.data.datasets.findIndex(d => d.label === 'GPS G{selected_gps_prn} L1 SNR (Benchmark)');
+                if (idx !== -1) {{
+                    chart.setDatasetVisibility(idx, e.target.checked);
+                    chart.update();
+                }}
+            }});
+        }}
+        const chkGpsL5 = document.getElementById('chk-gps-l5');
+        if (chkGpsL5) {{
+            chkGpsL5.addEventListener('change', (e) => {{
+                const idx = chart.data.datasets.findIndex(d => d.label === 'GPS G{selected_gps_prn} L5 SNR (Benchmark)');
                 if (idx !== -1) {{
                     chart.setDatasetVisibility(idx, e.target.checked);
                     chart.update();
@@ -649,13 +850,13 @@ def generate_html_plot(records1, records2, gps_best_snr, log_filepath1, log_file
         }}
     </script>
 </body>
-</html>
 """
     with open(output_html_path, 'w', encoding='utf-8') as f:
         f.write(html_content)
     print(f"Interactive HTML dashboard saved to: {output_html_path}")
 
-def plot_static_png(records1, records2, gps_best_snr, log_filepath1, log_filepath2, show_gps, output_png_path):
+
+def plot_static_png(records1, records2, gps_l1_series, gps_l5_series, selected_gps_prn, log_filepath1, log_filepath2, show_gps, output_png_path):
     try:
         import matplotlib.pyplot as plt
         import matplotlib.dates as mdates
@@ -682,16 +883,22 @@ def plot_static_png(records1, records2, gps_best_snr, log_filepath1, log_filepat
             
             title_text += f" vs File 2: {os.path.basename(log_filepath2)}"
             
-        if show_gps and gps_best_snr:
-            gps_times = sorted(gps_best_snr.keys())
-            # Map GPS times to datetime objects
-            # To do this correctly, we need the reference date from filename 1
+        if show_gps and selected_gps_prn:
+            gps_times = sorted(gps_l1_series.keys())
             ref_date = parse_filename_date(log_filepath1) or datetime.now()
             gps_week_start = get_gps_week_start(ref_date)
             gps_dts = [gps_week_start + timedelta(seconds=t) for t in gps_times]
-            gps_vals = [gps_best_snr[t] for t in gps_times]
+            gps_l1_vals = [gps_l1_series[t] for t in gps_times]
+            gps_l5_vals = [gps_l5_series[t] for t in gps_times]
             
-            ax.plot(gps_dts, gps_vals, label='Best GPS SNR (Benchmark)', color='#9ca3af', linestyle=':', linewidth=1)
+            valid_l1 = [v for v in gps_l1_vals if v is not None]
+            avg_l1 = sum(valid_l1)/len(valid_l1) if valid_l1 else 0
+            
+            valid_l5 = [v for v in gps_l5_vals if v is not None]
+            avg_l5 = sum(valid_l5)/len(valid_l5) if valid_l5 else 0
+            
+            ax.plot(gps_dts, gps_l1_vals, label=f'GPS G{selected_gps_prn} L1 SNR (Avg: {avg_l1:.1f})', color='#a1a1aa', linestyle='--', linewidth=1.2)
+            ax.plot(gps_dts, gps_l5_vals, label=f'GPS G{selected_gps_prn} L5 SNR (Avg: {avg_l5:.1f})', color='#71717a', linestyle=':', linewidth=1.2)
             
         ax.set_title(title_text, fontsize=12, fontweight='bold', pad=15)
         ax.set_xlabel('Time (GPS)', fontsize=11, labelpad=10)
@@ -717,7 +924,7 @@ def plot_static_png(records1, records2, gps_best_snr, log_filepath1, log_filepat
         print("Warning: matplotlib not installed. Skipping static PNG plot generation.")
         return False
 
-def plot_animation(records1, records2, gps_best_snr, log_filepath1, log_filepath2, show_gps, output_video_path):
+def plot_animation(records1, records2, gps_l1_series, gps_l5_series, selected_gps_prn, log_filepath1, log_filepath2, show_gps, output_video_path):
     try:
         import matplotlib.pyplot as plt
         import matplotlib.animation as animation
@@ -732,21 +939,23 @@ def plot_animation(records1, records2, gps_best_snr, log_filepath1, log_filepath
             x5_1 = [m['x5_1'] for m in merged]
             x1_2 = [m['x1_2'] for m in merged]
             x5_2 = [m['x5_2'] for m in merged]
-            gps_vals = [gps_best_snr.get(m['tow'], None) for m in merged] if show_gps else []
+            gps_l1_vals = [gps_l1_series.get(m['tow'], None) for m in merged] if (show_gps and selected_gps_prn) else []
+            gps_l5_vals = [gps_l5_series.get(m['tow'], None) for m in merged] if (show_gps and selected_gps_prn) else []
         else:
             times = [datetime.strptime(r['time'], '%Y-%m-%d %H:%M:%S') for r in records1]
             x1_1 = [r['x1'] for r in records1]
             x5_1 = [r['x5'] for r in records1]
             x1_2 = []
             x5_2 = []
-            gps_vals = [gps_best_snr.get(r['tow'], None) for r in records1] if show_gps else []
+            gps_l1_vals = [gps_l1_series.get(r['tow'], None) for r in records1] if (show_gps and selected_gps_prn) else []
+            gps_l5_vals = [gps_l5_series.get(r['tow'], None) for r in records1] if (show_gps and selected_gps_prn) else []
             
         plt.style.use('dark_background')
         fig, ax = plt.subplots(figsize=(10, 5.5))
         
         ax.set_xlim(min(times), max(times))
         
-        all_y = [y for y in x1_1 + x5_1 + x1_2 + x5_2 + gps_vals if y is not None]
+        all_y = [y for y in x1_1 + x5_1 + x1_2 + x5_2 + gps_l1_vals + gps_l5_vals if y is not None]
         min_y = min(all_y) - 2 if all_y else 20
         max_y = max(all_y) + 2 if all_y else 60
         ax.set_ylim(min_y, max_y)
@@ -773,9 +982,10 @@ def plot_animation(records1, records2, gps_best_snr, log_filepath1, log_filepath
             line_x5_2, = ax.plot([], [], label='File 2 X5 SNR', color='#ef4444', linestyle='--', linewidth=1.5)
             lines.extend([line_x1_2, line_x5_2])
             
-        if show_gps and gps_vals:
-            line_gps, = ax.plot([], [], label='Best GPS SNR (Benchmark)', color='#9ca3af', linestyle=':', linewidth=1)
-            lines.append(line_gps)
+        if show_gps and selected_gps_prn:
+            line_gps_l1, = ax.plot([], [], label=f'GPS G{selected_gps_prn} L1 SNR', color='#a1a1aa', linestyle='--', linewidth=1.2)
+            line_gps_l5, = ax.plot([], [], label=f'GPS G{selected_gps_prn} L5 SNR', color='#71717a', linestyle=':', linewidth=1.2)
+            lines.extend([line_gps_l1, line_gps_l5])
             
         ax.legend(loc='upper right', framealpha=0.5)
         
@@ -810,9 +1020,10 @@ def plot_animation(records1, records2, gps_best_snr, log_filepath1, log_filepath
                 line_x5_2.set_data(t_slice, x5_2[:idx_limit])
                 curr_lines.extend([line_x1_2, line_x5_2])
                 
-            if show_gps and gps_vals:
-                line_gps.set_data(t_slice, gps_vals[:idx_limit])
-                curr_lines.append(line_gps)
+            if show_gps and selected_gps_prn:
+                line_gps_l1.set_data(t_slice, gps_l1_vals[:idx_limit])
+                line_gps_l5.set_data(t_slice, gps_l5_vals[:idx_limit])
+                curr_lines.extend([line_gps_l1, line_gps_l5])
                 
             return curr_lines
             
@@ -836,30 +1047,30 @@ def plot_animation(records1, records2, gps_best_snr, log_filepath1, log_filepath
         print("Note: MP4 animation requires FFmpeg. You can save as .gif by specifying a .gif extension.")
         return False
 
-def export_csv(records1, records2, gps_best_snr, show_gps, output_csv_path):
+def export_csv(records1, records2, gps_l1_series, gps_l5_series, selected_gps_prn, show_gps, output_csv_path):
     import csv
     with open(output_csv_path, 'w', newline='') as f:
         writer = csv.writer(f)
         if records2:
             merged, _ = merge_time_series(records1, records2)
             headers = ['Time (GPS)', 'File1 X1 SNR (dB-Hz)', 'File1 X5 SNR (dB-Hz)', 'File2 X1 SNR (dB-Hz)', 'File2 X5 SNR (dB-Hz)']
-            if show_gps:
-                headers.append('Best GPS SNR (dB-Hz)')
+            if show_gps and selected_gps_prn:
+                headers.extend([f'GPS G{selected_gps_prn} L1 SNR (dB-Hz)', f'GPS G{selected_gps_prn} L5 SNR (dB-Hz)'])
             writer.writerow(headers)
             for m in merged:
                 row = [m['time'], m['x1_1'], m['x5_1'], m['x1_2'], m['x5_2']]
-                if show_gps:
-                    row.append(gps_best_snr.get(m['tow'], ""))
+                if show_gps and selected_gps_prn:
+                    row.extend([gps_l1_series.get(m['tow'], ""), gps_l5_series.get(m['tow'], "")])
                 writer.writerow(row)
         else:
             headers = ['Time (GPS)', 'TOW (s)', 'X1 SNR (dB-Hz)', 'X5 SNR (dB-Hz)']
-            if show_gps:
-                headers.append('Best GPS SNR (dB-Hz)')
+            if show_gps and selected_gps_prn:
+                headers.extend([f'GPS G{selected_gps_prn} L1 SNR (dB-Hz)', f'GPS G{selected_gps_prn} L5 SNR (dB-Hz)'])
             writer.writerow(headers)
             for r in records1:
                 row = [r['time'], r['tow'], r['x1'], r['x5']]
-                if show_gps:
-                    row.append(gps_best_snr.get(r['tow'], ""))
+                if show_gps and selected_gps_prn:
+                    row.extend([gps_l1_series.get(r['tow'], ""), gps_l5_series.get(r['tow'], "")])
                 writer.writerow(row)
     print(f"CSV data exported to: {output_csv_path}")
 
@@ -881,7 +1092,7 @@ def main():
         print(f"Error: File not found: {args.file}")
         sys.exit(1)
         
-    records1, gps_best_snr = decode_rtcm3_log(args.file)
+    records1, gps_obs_data = decode_rtcm3_log(args.file)
     if not records1:
         print("No Xona X18 observations decoded from the first file. Exiting.")
         sys.exit(0)
@@ -891,15 +1102,58 @@ def main():
         if not os.path.exists(args.compare):
             print(f"Error: Comparison file not found: {args.compare}")
             sys.exit(1)
-        records2, gps_best_snr2 = decode_rtcm3_log(args.compare)
+        records2, gps_obs_data2 = decode_rtcm3_log(args.compare)
         if not records2:
             print("Warning: No Xona X18 observations decoded from the comparison file.")
             
-        # Merge both receivers' GPS best SNR lists if comparison file has one too
         if args.gps:
-            for tow, val in gps_best_snr2.items():
-                if tow not in gps_best_snr or val > gps_best_snr[tow]:
-                    gps_best_snr[tow] = val
+            gps_obs_data = merge_gps_obs(gps_obs_data, gps_obs_data2)
+            
+    selected_gps_prn = None
+    gps_l1_series = {}
+    gps_l5_series = {}
+    
+    if args.gps:
+        selected_gps_prn, gps_l1_series, gps_l5_series = select_best_gps_satellite(records1, records2, gps_obs_data)
+        
+    # Compute averages over aligned epochs
+    x1_vals = [r['x1'] for r in records1 if r['x1'] is not None]
+    x5_vals = [r['x5'] for r in records1 if r['x5'] is not None]
+    gps_l1_vals = []
+    gps_l5_vals = []
+    
+    for r in records1:
+        tow = r['tow']
+        if args.gps and selected_gps_prn and tow in gps_l1_series:
+            l1_val = gps_l1_series[tow]
+            l5_val = gps_l5_series[tow]
+            if l1_val is not None:
+                gps_l1_vals.append(l1_val)
+            if l5_val is not None:
+                gps_l5_vals.append(l5_val)
+                
+    print("\n==================================================")
+    print("SNR Average Summary (Aligned Epochs):")
+    print("==================================================")
+    if x1_vals:
+        print(f"File 1 Xona X1 Average SNR: {sum(x1_vals)/len(x1_vals):.2f} dB-Hz")
+    if x5_vals:
+        print(f"File 1 Xona X5 Average SNR: {sum(x5_vals)/len(x5_vals):.2f} dB-Hz")
+        
+    if records2:
+        x1_2_vals = [r['x1'] for r in records2 if r['x1'] is not None]
+        x5_2_vals = [r['x5'] for r in records2 if r['x5'] is not None]
+        if x1_2_vals:
+            print(f"File 2 Xona X1 Average SNR: {sum(x1_2_vals)/len(x1_2_vals):.2f} dB-Hz")
+        if x5_2_vals:
+            print(f"File 2 Xona X5 Average SNR: {sum(x5_2_vals)/len(x5_2_vals):.2f} dB-Hz")
+            
+    if args.gps and selected_gps_prn:
+        if gps_l1_vals:
+            print(f"GPS G{selected_gps_prn} L1 Average SNR: {sum(gps_l1_vals)/len(gps_l1_vals):.2f} dB-Hz")
+        if gps_l5_vals:
+            print(f"GPS G{selected_gps_prn} L5 Average SNR: {sum(gps_l5_vals)/len(gps_l5_vals):.2f} dB-Hz")
+    print("==================================================\n")
             
     base_name = args.output
     if not base_name:
@@ -908,14 +1162,14 @@ def main():
             base_name += "_vs_" + os.path.splitext(os.path.basename(args.compare))[0]
             
     if args.csv:
-        export_csv(records1, records2, gps_best_snr, args.gps, args.csv)
+        export_csv(records1, records2, gps_l1_series, gps_l5_series, selected_gps_prn, args.gps, args.csv)
         
     if not args.no_png:
-        plot_static_png(records1, records2, gps_best_snr, args.file, args.compare, args.gps, f"{base_name}.png")
+        plot_static_png(records1, records2, gps_l1_series, gps_l5_series, selected_gps_prn, args.file, args.compare, args.gps, f"{base_name}.png")
         
     if not args.no_html:
         html_path = os.path.abspath(f"{base_name}.html")
-        generate_html_plot(records1, records2, gps_best_snr, args.file, args.compare, args.gps, html_path)
+        generate_html_plot(records1, records2, gps_l1_series, gps_l5_series, selected_gps_prn, args.file, args.compare, args.gps, html_path)
         if args.open:
             webbrowser.open(f"file:///{html_path}")
             
@@ -923,7 +1177,7 @@ def main():
         anim_path = args.animate
         if anim_path == 'auto':
             anim_path = f"{base_name}.gif"
-        plot_animation(records1, records2, gps_best_snr, args.file, args.compare, args.gps, anim_path)
+        plot_animation(records1, records2, gps_l1_series, gps_l5_series, selected_gps_prn, args.file, args.compare, args.gps, anim_path)
 
 if __name__ == "__main__":
     main()
